@@ -35,6 +35,7 @@ class BanWatcher(Cog):
             )  # Member is a Member, not a snowflake nor a user, will this work?
             ban_entry
             # TODO: Ban reason parsing
+            return ban_entry is not None
         except discord.Forbidden as e:
             # TODO: Raise nice warning and log <3
             print(
@@ -49,7 +50,7 @@ class BanWatcher(Cog):
             return False
         except discord.NotFound:
             return False
-        return True
+        return False
 
     @Cog.listener()
     async def on_member_join(self, member: Member):
