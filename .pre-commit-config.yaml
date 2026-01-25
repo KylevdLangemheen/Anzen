@@ -1,0 +1,30 @@
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+  - id: check-added-large-files
+    args: ["--maxkb=500"]
+  - id: check-case-conflict
+  - id: check-illegal-windows-names
+  - id: check-json
+  - id: check-merge-conflict
+  - id: check-symlinks
+  - id: check-toml
+  - id: check-xml
+  - id: check-yaml
+  - id: destroyed-symlinks
+  - id: end-of-file-fixer
+  - id: requirements-txt-fixer
+  - id: trailing-whitespace
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.14.9
+  hooks:
+    - id: ruff-format
+- repo: https://github.com/PyCQA/isort
+  rev: 7.0.0
+  hooks:
+    - id: isort
+- repo: https://github.com/asottile/pyupgrade
+  rev: v3.21.2
+  hooks:
+    - id: pyupgrade
