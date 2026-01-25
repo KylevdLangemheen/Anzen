@@ -83,10 +83,10 @@ class BanWatcher(Cog):
                 continue
 
             if other_guild.get_member(member.id) is not None:
-                channel = self._get_logchannel_for_guild(member.guild)
+                channel = self._get_logchannel_for_guild(other_guild)
                 if channel is None:
                     return
-                message = f"# Banned Member\nYour member <@{member.id}> just got banned in {other_guild}."
+                message = f"# Banned Member\nYour member <@{member.id}> just got banned in {guild}."
                 await channel.send(message)
 
     @command()
