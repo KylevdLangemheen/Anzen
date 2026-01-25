@@ -78,7 +78,7 @@ class BanWatcher(Cog):
     @Cog.listener()
     async def on_member_ban(self, guild: Guild, member: User | Member):
         """Handle checks whether this member exists on other servers and notify them."""
-        for other_guild in self.guilds:
+        for other_guild in self.bot.guilds:
             if other_guild == guild:
                 continue
 
