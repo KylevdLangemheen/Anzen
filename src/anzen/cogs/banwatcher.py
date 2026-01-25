@@ -38,7 +38,7 @@ class BanWatcher(Cog):
         except discord.Forbidden as e:
             # TODO: Raise nice warning and log <3
             print(
-                f"For some reason, {self.user} did not have permission to check for bans in {guild} with error {e}. Skipping."
+                f"For some reason, {self.member} did not have permission to check for bans in {guild} with error {e}. Skipping."
             )
             return False
         except discord.HTTPException as e:
@@ -60,7 +60,8 @@ class BanWatcher(Cog):
             if other_guild == member.guild:
                 continue
 
-            if self._member_banned_in_guild(member, other_guild):
+            was_banned = await self._member_banned_in_guild(member, other_guild)
+            if was_banned:
                 banned_in.append(other_guild)
                 # New member is banned in other guild, log!
 
@@ -70,7 +71,7 @@ class BanWatcher(Cog):
         channel = self._get_logchannel_for_guild(member.guild)
         if channel is None:
             return
-        message = f"# New Member\nYour new member {member.nick} has previously been banned in {len(banned_in)} other guild(s):{'\n- '.join([str(g) for g in banned_in])}"
+        message = f"# New Member\nYour new member {member} has previously been banned in {len(banned_in)} other guild(s):\n-{'\n- '.join([str(g) for g in banned_in])}"
         await channel.send(message)
 
     @Cog.listener()
@@ -84,7 +85,7 @@ class BanWatcher(Cog):
                 channel = self._get_logchannel_for_guild(member.guild)
                 if channel is None:
                     return
-                message = f"# Banned Member\nYour member {member.nick} just got banned in {other_guild}."
+                message = f"# Banned Member\nYour member {member} just got banned in {other_guild}."
                 await channel.send(message)
 
     @command()
