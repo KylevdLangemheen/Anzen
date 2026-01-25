@@ -1,0 +1,7 @@
+services:
+  anzen-bot:
+    build: .
+    container_name: anzen-bot
+    restart: unless-stopped
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
