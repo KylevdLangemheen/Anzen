@@ -55,7 +55,7 @@ class BanWatcher(Cog):
     async def on_member_join(self, member: Member):
         """Handle checks whether this member is banned on other servers here."""
         banned_in = []
-        for other_guild in self.guilds:
+        for other_guild in self.bot.guilds:
             # Skip the guild that triggered this
             if other_guild == member.guild:
                 continue
