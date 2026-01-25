@@ -72,7 +72,7 @@ class BanWatcher(Cog):
         channel = self._get_logchannel_for_guild(member.guild)
         if channel is None:
             return
-        message = f"# New Member\nYour new member @{member.id} has previously been banned in {len(banned_in)} other guild(s):\n- {'\n- '.join([str(g) for g in banned_in])}"
+        message = f"# New Member\nYour new member <@{member.id}> has previously been banned in {len(banned_in)} other guild(s):\n- {'\n- '.join([str(g) for g in banned_in])}"
         await channel.send(message)
 
     @Cog.listener()
@@ -86,7 +86,7 @@ class BanWatcher(Cog):
                 channel = self._get_logchannel_for_guild(member.guild)
                 if channel is None:
                     return
-                message = f"# Banned Member\nYour member @{member.id} just got banned in {other_guild}."
+                message = f"# Banned Member\nYour member <@{member.id}> just got banned in {other_guild}."
                 await channel.send(message)
 
     @command()
