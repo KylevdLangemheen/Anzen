@@ -19,7 +19,7 @@ class BanWatcher(Cog):
     def __init__(self, bot: Bot):
         self.bot = bot
 
-    def _get_logchannel_id_for_guild(
+    def _get_logchannel_for_guild(
         self, guild: Guild
     ) -> GuildChannel | Thread | PrivateChannel | None:
         if guild.id in self.guild_logchannel:
