@@ -12,8 +12,10 @@ class BanWatcher(Cog):
     guild_logchannel = {
         # STEM Net : user-blacklist
         1449762075109752955: 1449797203362320496,
-        # Artificial Intelligence :
+        # Artificial Intelligence : anzen-banlog
         167811324590424065: 1465002838634533160,
+        # Discord Explorer : general
+        593006751394037790: 593006751398232064,
     }
 
     def __init__(self, bot: Bot):
