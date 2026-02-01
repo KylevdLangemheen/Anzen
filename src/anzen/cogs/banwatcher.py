@@ -31,6 +31,7 @@ class BanWatcher(Cog):
             return None
 
     async def _member_banned_in_guild(self, member: Member, guild: Guild) -> bool:
+        print(f"{member} got banned in {guild}.")
         try:
             ban_entry = await guild.fetch_ban(
                 member
