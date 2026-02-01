@@ -31,7 +31,6 @@ class BanWatcher(Cog):
             return None
 
     async def _member_banned_in_guild(self, member: Member, guild: Guild) -> bool:
-        print(f"{member} got banned in {guild}.")
         try:
             ban_entry = await guild.fetch_ban(
                 member
@@ -58,6 +57,7 @@ class BanWatcher(Cog):
     @Cog.listener()
     async def on_member_join(self, member: Member):
         """Handle checks whether this member is banned on other servers here."""
+        # TODO: optionally ignore expired bans & unbans
         banned_in = []
         for other_guild in self.bot.guilds:
             # Skip the guild that triggered this
@@ -81,6 +81,7 @@ class BanWatcher(Cog):
     @Cog.listener()
     async def on_member_ban(self, guild: Guild, member: User | Member):
         """Handle checks whether this member exists on other servers and notify them."""
+        print(f"{member} got banned in {guild}.")
         for other_guild in self.bot.guilds:
             if other_guild == guild:
                 continue
@@ -95,7 +96,8 @@ class BanWatcher(Cog):
     @command()
     async def configure(self, interaction: discord.Interaction):
         """Configure Anzen."""
-        await interaction.response.send_modal(Feedback())
+        interaction.channel.send("Hi")
+        # await interaction.response.send_modal(Feedback())
 
 
 async def setup(bot):
