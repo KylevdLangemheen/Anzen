@@ -9,9 +9,9 @@ WORKDIR /app
 
 COPY uv.lock pyproject.toml ./
 
-RUN uv sync --frozen --no-install-project --no-cache
+RUN uv sync --frozen --no-install-project --no-cache --system
 
 COPY . .
-RUN uv sync --frozen --no-cache
+RUN uv sync --frozen --no-cache --system
 
 CMD ["python", "-m", "anzen"]
