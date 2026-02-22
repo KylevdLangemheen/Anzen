@@ -1,9 +1,10 @@
-FROM python:3.14-slim
+FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Prevent Python from buffering logs
 ENV PYTHONUNBUFFERED=1
-
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 

@@ -5,3 +5,26 @@ services:
     restart: unless-stopped
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
+      - POSTGRESQL_HOST=${POSTGRESQL_HOST}
+      - POSTGRESQL_USER=${POSTGRESQL_USER}
+      - POSTGRESQL_PW=${POSTGRESQL_PW}
+    networks:
+      - anzen-network
+  anzen-db:
+    image: postgres:18
+    container_name: ${POSTGRESQL_HOST}
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRESQL_USER}
+      - POSTGRES_PASSWORD=${POSTGRESQL_PW}
+      - POSTGRES_DB=db_anzen
+    volumes:
+      - anzen-db-data:/var/lib/postgresql
+    networks:
+      - anzen-network
+
+networks:
+  anzen-network:
+
+volumes:
+  anzen-db-data:

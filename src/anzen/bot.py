@@ -1,7 +1,7 @@
 import discord
 from discord.ext.commands import Bot
 
-MY_GUILD = discord.Object(id=593006751394037790)
+MY_GUILD = discord.Object(id=167811324590424065)
 
 
 class Anzen(Bot):
@@ -11,25 +11,16 @@ class Anzen(Bot):
     async def setup_hook(self):
         await self.load_extension("anzen.cogs.banwatcher")
 
-    async def on_message(self, message: discord.Message):
-        if message.author.guild.id == MY_GUILD.id:
-            if message.content == "sync":
-                await message.channel.send("Help I'm syncing!")
-                self.tree.copy_global_to(guild=MY_GUILD)
-                synced = await self.tree.sync(guild=MY_GUILD)
-                await message.channel.send(f"Sync complete: {synced}")
-
-            if message.content == "list":
-                print([c.name for c in self.tree.get_commands()])
-        else:
-            print(
-                f"Message from {message.author} in {message.author.guild.name}: {message.content}"
-            )
+    async def on_guild_join(self, guild: discord.Guild):
+        self.tree.copy_global_to(guild=guild)
+        await self.tree.sync(guild=guild)
 
 
-intents = discord.Intents.default()
-intents.message_content = True  # Placeholder for development
+intents = discord.Intents.none()
+# intents.message_content = False  # Not necessary!
 intents.members = True  # Necessary for on_member_join / etc.
 intents.bans = True  # Necessary for on_member_ban
+intents.guilds = True  # Necessary for on_guild_join
+intents.moderation = True  # Same as intents.bans?
 
 anzen_bot = Anzen(intents=intents)

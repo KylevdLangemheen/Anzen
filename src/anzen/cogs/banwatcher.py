@@ -1,25 +1,77 @@
+import asyncio
+import os
+from enum import Enum
+
 import discord
 from discord import Guild, Member, Thread, User  # noqa
 from discord.abc import GuildChannel, PrivateChannel
 from discord.app_commands import command
 from discord.ext.commands import Bot, Cog
+from pydantic import BaseModel
+from sqlalchemy import BigInteger, Column, select
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
 
-from anzen.modals.configure import Feedback
+from anzen.views.configure import ChannelPageView as SettingsView
+from anzen.views.configure import Settings
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Config(Base):
+    __tablename__ = "config"
+    server_id = Column(BigInteger, primary_key=True)
+    logchannel_id = Column(BigInteger, nullable=False)
+
+
+db_is_setup = False
+
+
+async def ensure_db(engine: AsyncEngine):
+    global db_is_setup
+    if not db_is_setup:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        db_is_setup = True
+
+
+# Wants bot permissions "view audit log", "send messages", "send messages in threads"
+
+
+class BanItem(BaseModel):
+    server_id: int
+    user_id: int
+    reason: str | None
+
+
+# TODO: Add your preferred ban fetch methods here if you do not want to rely on the discord api
+class BanFetchMethod(Enum):
+    DISCORD_API: int = 0
 
 
 class BanWatcher(Cog):
-    # TODO: add ways to configure this nicely. Maybe a web UI?
-    guild_logchannel = {
-        # STEM Net : user-blacklist
-        1449762075109752955: 1449797203362320496,
-        # Artificial Intelligence : anzen-banlog
-        167811324590424065: 1465002838634533160,
-        # Discord Explorer : general
-        593006751394037790: 593006751398232064,
-    }
+    # Experimenting with Components V2 now.
+    guild_logchannel = {}
+
+    async def _update_logchannels(self) -> dict[int, int]:
+        async with AsyncSession(self.engine) as session:
+            result = await session.execute(
+                select(Config.server_id, Config.logchannel_id)
+            )
+            self.guild_logchannel = {row.server_id: row.logchannel_id for row in result}
 
     def __init__(self, bot: Bot):
         self.bot = bot
+        self.engine = create_async_engine(
+            f"postgresql+psycopg://{os.getenv('POSTGRESQL_USER')}:{os.getenv('POSTGRESQL_PW')}@{os.getenv('POSTGRESQL_HOST')}/db_anzen"
+        )
+
+    async def cog_load(self):
+        await ensure_db(self.engine)
+        await self._update_logchannels()
+        return await super().cog_load()
 
     def _get_logchannel_for_guild(
         self, guild: Guild
@@ -30,58 +82,110 @@ class BanWatcher(Cog):
         else:
             return None
 
-    async def _member_banned_in_guild(self, member: Member, guild: Guild) -> bool:
+    async def _member_banned_in_guild_discord_api(
+        self, member: Member, guild: Guild
+    ) -> BanItem | None:
         try:
             ban_entry = await guild.fetch_ban(
                 member
             )  # Member is a Member, not a snowflake nor a user, will this work?
-            ban_entry
+            if ban_entry is None:
+                return None
+            ban_item = BanItem(
+                server_id=guild.id, user_id=ban_entry.user.id, reason=ban_entry.reason
+            )
             # TODO: Ban reason parsing
-            return ban_entry is not None
+            return ban_item
         except discord.Forbidden as e:
             # TODO: Raise nice warning and log <3
             print(
                 f"For some reason, {self.member} did not have permission to check for bans in {guild} with error {e}. Skipping."
             )
-            return False
-        except discord.HTTPException as e:
+        except (
+            discord.HTTPException
+        ) as e:  # This is the default when member was not banned before.
             # TODO: Raise nice warning and log <3
             print(
                 f"Some HTTP error occurred while checking whether {member} is banned on server {guild} with error {e}. Skipping"
             )
-            return False
-        except discord.NotFound:
-            return False
-        return False
+        except discord.NotFound:  # Not used I think?
+            pass
+
+    async def _member_banned_in_guild(
+        self,
+        member: Member,
+        guild: Guild,
+        method: BanFetchMethod = BanFetchMethod.DISCORD_API,
+    ) -> BanItem | None:
+        # TODO: allow Anzen to be configured to query an external API for subset of bans instead
+        ban_item = None
+        if method == BanFetchMethod.DISCORD_API:
+            ban_item = await self._member_banned_in_guild_discord_api(
+                member=member, guild=guild
+            )
+        else:
+            raise NotImplementedError(
+                f"BanFetchMethod '{method}' not yet implemented.\nSupported methods are: {[m.name for m in BanFetchMethod]}"
+            )
+        return ban_item
+
+    def _format_joinmessage(self, bi: BanItem):
+        if bi.reason is not None:
+            return (
+                f"{str(self.bot.get_guild(bi.server_id))}\n  - With reason: {bi.reason}"
+            )
+        return f"{str(self.bot.get_guild(bi.server_id))}"
 
     @Cog.listener()
     async def on_member_join(self, member: Member):
         """Handle checks whether this member is banned on other servers here."""
         # TODO: optionally ignore expired bans & unbans
-        banned_in = []
+        ban_items: list[BanItem] = []
         for other_guild in self.bot.guilds:
             # Skip the guild that triggered this
             if other_guild == member.guild:
                 continue
 
-            was_banned = await self._member_banned_in_guild(member, other_guild)
-            if was_banned:
-                banned_in.append(other_guild)
+            ban_item = await self._member_banned_in_guild(member, other_guild)
+            if ban_item is not None:
+                ban_items.append(self.bot.get_guild(ban_item.server_id))
                 # New member is banned in other guild, log!
 
-        if not banned_in:
+        if not ban_items:
             return
 
         channel = self._get_logchannel_for_guild(member.guild)
         if channel is None:
             return
-        message = f"# New Member\nYour new member <@{member.id}> has previously been banned in {len(banned_in)} other guild(s):\n- {'\n- '.join([str(g) for g in banned_in])}"
+        message = f"# New Member\nYour new member <@{member.id}> has previously been banned in {len(ban_items)} other guild(s):\n- {'\n- '.join([self._format_joinmessage(bi) for bi in ban_items])}"
         await channel.send(message)
+
+    async def log_new_member(self, member: Member, ban_list: list[BanItem]):
+        pass
+
+    async def get_ban_reason(
+        self, guild: Guild, member: User | Member, retries: int = 3
+    ) -> str | None:
+        # TODO: If a lot of members are banned within a couple of seconds, this method will miss them.
+        # There doesn't seem to be a better way of doing this for now though.
+        await asyncio.sleep(1)
+        for _ in range(retries):
+            async for entry in guild.audit_logs(limit=10):
+                if entry.target.id == member.id:
+                    return entry.reason
+            await asyncio.sleep(2)
 
     @Cog.listener()
     async def on_member_ban(self, guild: Guild, member: User | Member):
         """Handle checks whether this member exists on other servers and notify them."""
+        # TODO: Store references to logs such that logs can be removed when necessary
+        # TODO: Be able to invoke on_member_ban through API. Optionally connect this bot's on_member_ban to said API
         print(f"{member} got banned in {guild}.")
+        bi = BanItem(
+            server_id=guild.id,
+            user_id=member.id,
+            reason=await self.get_ban_reason(guild, member),
+        )
         for other_guild in self.bot.guilds:
             if other_guild == guild:
                 continue
@@ -90,14 +194,27 @@ class BanWatcher(Cog):
                 channel = self._get_logchannel_for_guild(other_guild)
                 if channel is None:
                     return
-                message = f"# Banned Member\nYour member <@{member.id}> just got banned in {guild}."
+                if bi.reason is not None:
+                    message = f"# Banned Member\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)} with reason: {bi.reason}."
+                    print(f"Trying to log to {channel}")
+                    print(message)
+                    await channel.send(message)
+                    return
+                message = f"# Banned Member\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)}."
                 await channel.send(message)
 
     @command()
     async def configure(self, interaction: discord.Interaction):
         """Configure Anzen."""
-        interaction.channel.send("Hi")
-        # await interaction.response.send_modal(Feedback())
+        settings = Settings()
+        view = SettingsView(self.engine, Config, interaction.guild, settings)
+        # await interaction.channel.send("No.")
+        await interaction.response.send_message(view=view, ephemeral=False)
+        await view.wait()
+
+        await self._update_logchannels()
+
+        print(f"Settings updated: {settings}")
 
 
 async def setup(bot):
