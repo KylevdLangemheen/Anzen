@@ -148,7 +148,7 @@ class BanWatcher(Cog):
 
             ban_item = await self._member_banned_in_guild(member, other_guild)
             if ban_item is not None:
-                ban_items.append(self.bot.get_guild(ban_item.server_id))
+                ban_items.append(ban_item)
                 # New member is banned in other guild, log!
 
         if not ban_items:
