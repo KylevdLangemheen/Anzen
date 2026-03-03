@@ -24,6 +24,7 @@ class Config(Base):
     __tablename__ = "config"
     server_id = Column(BigInteger, primary_key=True)
     logchannel_id = Column(BigInteger, nullable=False)
+    modrole_id = Column(BigInteger, nullable=True)
 
 
 db_is_setup = False
@@ -58,9 +59,11 @@ class BanWatcher(Cog):
     async def _update_logchannels(self) -> dict[int, int]:
         async with AsyncSession(self.engine) as session:
             result = await session.execute(
-                select(Config.server_id, Config.logchannel_id)
+                select(Config.server_id, Config.logchannel_id, Config.modrole_id)
             )
-            self.guild_logchannel = {row.server_id: row.logchannel_id for row in result}
+            rows = result.all()
+            self.guild_logchannel = {row.server_id: row.logchannel_id for row in rows}
+            self.guild_modrole = {row.server_id: row.modrole_id for row in rows}
 
     def __init__(self, bot: Bot):
         self.bot = bot
@@ -159,7 +162,9 @@ class BanWatcher(Cog):
         channel = self._get_logchannel_for_guild(member.guild)
         if channel is None:
             return
-        message = f"# New Member\nYour new member <@{member.id}> has previously been banned in {len(ban_items)} other guild(s):\n- {'\n- '.join([self._format_joinmessage(bi) for bi in ban_items])}"
+        role_id = self.guild_modrole.get(member.guild.id)
+        ping = f"<@&{role_id}> " if role_id else ""
+        message = f"{ping}# New Member\nYour new member <@{member.id}> has previously been banned in {len(ban_items)} other guild(s):\n- {'\n- '.join([self._format_joinmessage(bi) for bi in ban_items])}"
         await channel.send(message)
 
     async def log_new_member(self, member: Member, ban_list: list[BanItem]):
@@ -197,13 +202,15 @@ class BanWatcher(Cog):
                 channel = self._get_logchannel_for_guild(other_guild)
                 if channel is None:
                     continue
+                role_id = self.guild_modrole.get(other_guild.id)
+                ping = f"<@&{role_id}> " if role_id else ""
                 if bi.reason is not None:
-                    message = f"# Banned Member\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)} with reason: {bi.reason}."
+                    message = f"{ping}# Banned Member\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)} with reason: {bi.reason}."
                     print(f"Trying to log to {channel}")
                     print(message)
                     await channel.send(message)
                     continue
-                message = f"# Banned Member\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)}."
+                message = f"{ping}# Banned Member\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)}."
                 await channel.send(message)
 
     @command()
