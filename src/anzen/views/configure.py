@@ -47,14 +47,14 @@ from sqlalchemy.orm import DeclarativeBase
 
 
 async def upsert_logchannel(
-    engine: AsyncEngine, Config: DeclarativeBase, server_id: int, logchannel_id: int
+    engine: AsyncEngine, Config: DeclarativeBase, server_id: int, logchannel_id: int, modrole_id: int | None = None
 ):
     async with AsyncSession(engine) as session:
         stmt = (
             insert(Config)
-            .values(server_id=server_id, logchannel_id=logchannel_id)
+            .values(server_id=server_id, logchannel_id=logchannel_id, modrole_id=modrole_id)
             .on_conflict_do_update(
-                index_elements=["server_id"], set_={"logchannel_id": logchannel_id}
+                index_elements=["server_id"], set_={"logchannel_id": logchannel_id, "modrole_id": modrole_id}
             )
         )
         await session.execute(stmt)
@@ -70,6 +70,7 @@ class Settings(BaseModel):
     channel: str | None = (
         None  # channel id in as str # TODO: add channel as partialmessageable?
     )
+    modrole: str | None = None
     # roles: List[Union[Role]] = pydantic_field(default_factory=list)
     # members: List[Union[Member, User]] = pydantic_field(default_factory=list)
     log_all_bans: bool = True
@@ -188,6 +189,28 @@ class CategorySetting(ActionRow["SettingsView"]):
             select.default_values = []
         await interaction.response.edit_message(view=self.view)
 
+class RoleSetting(ActionRow["SettingsView"]):
+    def __init__(self, settings: Settings, id=None):
+        super().__init__(id=id)
+        self.settings = settings
+
+    @ui.select(
+        placeholder="Optional mod role to ping",
+        cls=ui.RoleSelect,
+        max_values=1,
+        min_values=0,
+    )
+    async def select_role(self, interaction: Interaction, select: ui.RoleSelect) -> None:
+        if select.values:
+            role = select.values[0]
+            self.settings.modrole = str(role.id)
+            select.default_values = [
+                SelectDefaultValue(id=role.id, type=SelectDefaultValueType.role)
+            ]
+        else:
+            self.settings.modrole = None
+            select.default_values = []
+        await interaction.response.edit_message(view=self.view)
 
 class ChannelPage(Container):
     def __init__(self, guild: Guild, settings: Settings):
@@ -257,6 +280,8 @@ class ChannelPageView(LayoutView):
             )
         )
         container.add_item(ChannelSetting(self.guild, self.settings, id=101))
+        container.add_item(TextDisplay("## Mod Role\n-# Optionally select a role to ping on notifications."))
+        container.add_item(RoleSetting(self.settings, id=102))
         container.add_item(
             TextDisplay(
                 "## Coming Soon\n-# Further options such as default behaviour are coming soon."
@@ -280,7 +305,7 @@ class ChannelPageView(LayoutView):
         await interaction.response.edit_message(view=self)
         # Save the settings:
         await upsert_logchannel(
-            self.engine, self.Config, self.guild.id, int(self.settings.channel)
+            self.engine, self.Config, self.guild.id, int(self.settings.channel), int(self.settings.modrole) if self.settings.modrole else None
         )
         # ...and then send a confirmation message.
         await interaction.followup.send("Settings saved.", ephemeral=True)
