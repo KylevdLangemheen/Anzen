@@ -105,9 +105,11 @@ class BanWatcher(Cog):
             discord.HTTPException
         ) as e:  # This is the default when member was not banned before.
             # TODO: Raise nice warning and log <3
-            print(
-                f"Some HTTP error occurred while checking whether {member} is banned on server {guild} with error {e}. Skipping"
-            )
+            # Base case is simply that the user doesn't exist ;)
+            if not (e.status == 404 and e.code == 10026):
+                print(
+                    f"Some HTTP error occurred while checking whether {member} is banned on server {guild} with error {e}. Skipping"
+                )
         except discord.NotFound:  # Not used I think?
             pass
 
