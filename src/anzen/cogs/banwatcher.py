@@ -193,6 +193,7 @@ class BanWatcher(Cog):
                 continue
 
             if other_guild.get_member(member.id) is not None:
+                print(f"Member {member} exists in other server {guild}.")
                 channel = self._get_logchannel_for_guild(other_guild)
                 if channel is None:
                     return
