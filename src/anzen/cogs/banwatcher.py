@@ -99,7 +99,7 @@ class BanWatcher(Cog):
         except discord.Forbidden as e:
             # TODO: Raise nice warning and log <3
             print(
-                f"For some reason, {self.member} did not have permission to check for bans in {guild} with error {e}. Skipping."
+                f"For some reason, no permission to check whether {member} is banned in {guild} with error {e}. Skipping."
             )
         except (
             discord.HTTPException
