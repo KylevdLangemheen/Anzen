@@ -196,13 +196,13 @@ class BanWatcher(Cog):
                 print(f"Member {member} exists in other server {guild}.")
                 channel = self._get_logchannel_for_guild(other_guild)
                 if channel is None:
-                    return
+                    continue
                 if bi.reason is not None:
                     message = f"# Banned Member\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)} with reason: {bi.reason}."
                     print(f"Trying to log to {channel}")
                     print(message)
                     await channel.send(message)
-                    return
+                    continue
                 message = f"# Banned Member\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)}."
                 await channel.send(message)
 
