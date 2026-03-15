@@ -8,37 +8,13 @@ from discord.abc import GuildChannel, PrivateChannel
 from discord.app_commands import command
 from discord.ext.commands import Bot, Cog
 from pydantic import BaseModel
-from sqlalchemy import BigInteger, Column, select
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
-from sqlalchemy.orm import DeclarativeBase
 
+from anzen.data.database import DB_HOST, DatabaseSessionManager
+from anzen.data.datamodel import Config
 from anzen.views.configure import ChannelPageView as SettingsView
 from anzen.views.configure import Settings
 
-
-class Base(DeclarativeBase):
-    pass
-
-
-class Config(Base):
-    __tablename__ = "config"
-    server_id = Column(BigInteger, primary_key=True)
-    logchannel_id = Column(BigInteger, nullable=False)
-    modrole_id = Column(BigInteger, nullable=True)
-
-
-db_is_setup = False
-
-
-async def ensure_db(engine: AsyncEngine):
-    global db_is_setup
-    if not db_is_setup:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        db_is_setup = True
-
-
-# Wants bot permissions "view audit log", "send messages", "send messages in threads"
+# Wants bot permissions "ban members" "view audit log", "send messages", "send messages in threads"
 
 
 class BanItem(BaseModel):
@@ -54,33 +30,27 @@ class BanFetchMethod(Enum):
 
 class BanWatcher(Cog):
     # Experimenting with Components V2 now.
-    guild_logchannel = {}
+    server_config: dict[int, Config] = {}
 
     async def _update_logchannels(self) -> dict[int, int]:
-        async with AsyncSession(self.engine) as session:
-            result = await session.execute(
-                select(Config.server_id, Config.logchannel_id, Config.modrole_id)
-            )
-            rows = result.all()
-            self.guild_logchannel = {row.server_id: row.logchannel_id for row in rows}
-            self.guild_modrole = {row.server_id: row.modrole_id for row in rows}
+        async with self.sessionmanager.session() as db:
+            all_configs = await Config.get_all(db)
+            self.server_config = {config.server_id: config for config in all_configs}
 
     def __init__(self, bot: Bot):
         self.bot = bot
-        self.engine = create_async_engine(
-            f"postgresql+psycopg://{os.getenv('POSTGRESQL_USER')}:{os.getenv('POSTGRESQL_PW')}@{os.getenv('POSTGRESQL_HOST')}/db_anzen"
-        )
+        self.sessionmanager = DatabaseSessionManager()
+        self.sessionmanager.init(DB_HOST)
 
     async def cog_load(self):
-        await ensure_db(self.engine)
         await self._update_logchannels()
         return await super().cog_load()
 
     def _get_logchannel_for_guild(
         self, guild: Guild
     ) -> GuildChannel | Thread | PrivateChannel | None:
-        if guild.id in self.guild_logchannel:
-            channel = self.bot.get_channel(self.guild_logchannel[guild.id])
+        if guild.id in self.server_config:
+            channel = self.bot.get_channel(self.server_config[guild.id].logchannel_id)
             return channel
         else:
             return None
@@ -162,9 +132,9 @@ class BanWatcher(Cog):
         channel = self._get_logchannel_for_guild(member.guild)
         if channel is None:
             return
-        role_id = self.guild_modrole.get(member.guild.id)
-        ping = f"<@&{role_id}> " if role_id else ""
-        message = f"{ping}# New Member\nYour new member <@{member.id}> has previously been banned in {len(ban_items)} other guild(s):\n- {'\n- '.join([self._format_joinmessage(bi) for bi in ban_items])}"
+        role_id = self.server_config.get(member.guild.id).modrole_id
+        ping = f"\n<@&{role_id}> " if role_id else ""
+        message = f"# New Member{ping}\nYour new member <@{member.id}> has previously been banned in {len(ban_items)} other guild(s):\n- {'\n- '.join([self._format_joinmessage(bi) for bi in ban_items])}"
         await channel.send(message)
 
     async def log_new_member(self, member: Member, ban_list: list[BanItem]):
@@ -197,27 +167,29 @@ class BanWatcher(Cog):
             if other_guild == guild:
                 continue
 
-            if other_guild.get_member(member.id) is not None:
-                print(f"Member {member} exists in other server {guild}.")
-                channel = self._get_logchannel_for_guild(other_guild)
-                if channel is None:
-                    continue
-                role_id = self.guild_modrole.get(other_guild.id)
-                ping = f"<@&{role_id}> " if role_id else ""
-                if bi.reason is not None:
-                    message = f"{ping}# Banned Member\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)} with reason: {bi.reason}."
-                    print(f"Trying to log to {channel}")
-                    print(message)
-                    await channel.send(message)
-                    continue
-                message = f"{ping}# Banned Member\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)}."
+            if other_guild.get_member(member.id) is None:
+                continue
+
+            print(f"Member {member} exists in other server {other_guild}.")
+            channel = self._get_logchannel_for_guild(other_guild)
+            if channel is None:
+                continue
+            role_id = self.server_config.get(other_guild.id).modrole_id
+            ping = f"\n<@&{role_id}> " if role_id else ""
+            if bi.reason is not None:
+                message = f"# Banned Member{ping}\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)} with reason: {bi.reason}."
+                print(f"Trying to log to {channel}")
+                print(message)
                 await channel.send(message)
+                continue
+            message = f"# Banned Member{ping}\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)}."
+            await channel.send(message)
 
     @command()
     async def configure(self, interaction: discord.Interaction):
         """Configure Anzen."""
         settings = Settings()
-        view = SettingsView(self.engine, Config, interaction.guild, settings)
+        view = SettingsView(self.sessionmanager, Config, interaction.guild, settings)
         # await interaction.channel.send("No.")
         await interaction.response.send_message(view=view, ephemeral=False)
         await view.wait()

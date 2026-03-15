@@ -9,6 +9,7 @@ description = "Share ban logs across partnered discord servers."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "alembic>=1.18.4",
     "discord-py>=2.6.4",
     "psycopg[binary]>=3.3.3",
     "pydantic~=2.12.0",

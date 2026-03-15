@@ -22,6 +22,8 @@ services:
       - anzen-db-data:/var/lib/postgresql
     networks:
       - anzen-network
+    ports:
+      - "5432:5432"
 
 networks:
   anzen-network:

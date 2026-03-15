@@ -15,4 +15,4 @@ RUN uv sync --frozen --no-install-project --no-cache
 COPY . .
 RUN uv sync --frozen --no-cache
 
-CMD ["uv", "run", "python", "-m", "anzen"]
+CMD ["sh", "-c", "uv run alembic upgrade head && uv run python -m anzen"]
