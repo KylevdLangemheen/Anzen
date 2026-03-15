@@ -41,35 +41,12 @@ from discord.ui import (
     View,
 )
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
-from sqlalchemy.orm import DeclarativeBase
+
+from anzen.data.database import DatabaseSessionManager
+from anzen.data.datamodel import Config
 
 
-async def upsert_logchannel(
-    engine: AsyncEngine,
-    Config: DeclarativeBase,
-    server_id: int,
-    logchannel_id: int,
-    modrole_id: int | None = None,
-):
-    async with AsyncSession(engine) as session:
-        stmt = (
-            insert(Config)
-            .values(
-                server_id=server_id, logchannel_id=logchannel_id, modrole_id=modrole_id
-            )
-            .on_conflict_do_update(
-                index_elements=["server_id"],
-                set_={"logchannel_id": logchannel_id, "modrole_id": modrole_id},
-            )
-        )
-        await session.execute(stmt)
-        await session.commit()
-
-
-# This is where we'll store our settings for the purpose of this example.
-# In a real application you would want to store this in a database or file.
+# This is where we'll store our intermediate settings.
 class Settings(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -78,7 +55,7 @@ class Settings(BaseModel):
         None  # channel id in as str # TODO: add channel as partialmessageable?
     )
     modrole: str | None = None
-    # roles: List[Union[Role]] = pydantic_field(default_factory=list)
+    # roles: list[Role] = pydantic_field(default_factory=list)
     # members: List[Union[Member, User]] = pydantic_field(default_factory=list)
     log_all_bans: bool = True
     log_all_reasons: bool = True
@@ -197,13 +174,13 @@ class CategorySetting(ActionRow["SettingsView"]):
         await interaction.response.edit_message(view=self.view)
 
 
-class RoleSetting(ActionRow["SettingsView"]):
+class RoleSelectRow(ActionRow["SettingsView"]):
     def __init__(self, settings: Settings, id=None):
         super().__init__(id=id)
         self.settings = settings
 
     @ui.select(
-        placeholder="Optional mod role to ping",
+        placeholder="Optional role to ping",
         cls=ui.RoleSelect,
         max_values=1,
         min_values=0,
@@ -221,6 +198,52 @@ class RoleSetting(ActionRow["SettingsView"]):
             self.settings.modrole = None
             select.default_values = []
         await interaction.response.edit_message(view=self.view)
+
+
+class RoleButtonRow(ActionRow["SettingsView"]):
+    def __init__(self, select_row: RoleSelectRow, id=None):
+        super().__init__(id=id)
+        self.select_row = select_row
+
+    @ui.button(label="Can't see your role?", style=ButtonStyle.secondary)
+    async def set_role_by_id(self, interaction: Interaction, button: ui.Button) -> None:
+        await interaction.response.send_modal(RoleIDModal(self.select_row))
+
+
+class RoleIDModal(ui.Modal, title="Set role by ID"):
+    role_id_input = ui.TextInput(
+        label="Role ID",
+        placeholder="Enter the role ID here...",
+        min_length=17,
+        max_length=20,
+        required=True,
+    )
+
+    def __init__(self, action_row: RoleSelectRow):
+        super().__init__()
+        self.action_row = action_row
+
+    async def on_submit(self, interaction: Interaction) -> None:
+        raw = self.role_id_input.value.strip()
+
+        if not raw.isdigit():
+            await interaction.response.send_message(
+                "Invalid role ID — must be a numeric snowflake.", ephemeral=True
+            )
+            return
+
+        role = interaction.guild.get_role(int(raw))
+        if role is None:
+            await interaction.response.send_message(
+                "No role with that ID was found in this server.", ephemeral=True
+            )
+            return
+
+        self.action_row.settings.modrole = str(role.id)
+        self.action_row.select_role.default_values = [
+            SelectDefaultValue(id=role.id, type=SelectDefaultValueType.role)
+        ]
+        await interaction.response.edit_message(view=self.action_row.view)
 
 
 class ChannelPage(Container):
@@ -260,16 +283,16 @@ class ChannelPageView(LayoutView):
 
     def __init__(
         self,
-        engine: AsyncEngine,
-        Config: DeclarativeBase,
+        sessionmanager: DatabaseSessionManager,
+        config: Config,
         guild: Guild,
         settings: Settings,
     ):
         super().__init__()
         self.settings = settings
         self.guild = guild
-        self.engine = engine
-        self.Config = Config
+        self.sessionmanager = sessionmanager
+        self.config = config
 
         # For this example, we'll use multiple sections to organize the settings.
         container = Container()
@@ -296,7 +319,10 @@ class ChannelPageView(LayoutView):
                 "## Mod Role\n-# Optionally select a role to ping on notifications."
             )
         )
-        container.add_item(RoleSetting(self.settings, id=102))
+        select_row = RoleSelectRow(self.settings, id=102)
+        button_row = RoleButtonRow(select_row, id=103)
+        container.add_item(select_row)
+        container.add_item(button_row)
         container.add_item(
             TextDisplay(
                 "## Coming Soon\n-# Further options such as default behaviour are coming soon."
@@ -319,13 +345,15 @@ class ChannelPageView(LayoutView):
         # Edit the message to make it the interaction response...
         await interaction.response.edit_message(view=self)
         # Save the settings:
-        await upsert_logchannel(
-            self.engine,
-            self.Config,
-            self.guild.id,
-            int(self.settings.channel),
-            int(self.settings.modrole) if self.settings.modrole else None,
-        )
+        async with self.sessionmanager.session() as db:
+            await self.config.upsert(
+                db,
+                self.guild.id,
+                logchannel_id=int(self.settings.channel),
+                modrole_id=int(self.settings.modrole)
+                if self.settings.modrole
+                else None,
+            )
         # ...and then send a confirmation message.
         await interaction.followup.send("Settings saved.", ephemeral=True)
         # Then delete the settings panel
