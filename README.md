@@ -27,7 +27,7 @@ The Discord bot is fully configurable from within the server, with many more opt
 3. Obtain the installation link from the `OAuth2` section of the application (add scope `bot`)
 4. Add Anzen to the server
 5. Ensure Anzen has the necessary permissions (see Configuration)
-6. Run `\configure` in a private channel on the server
+6. Run `/configure` in a private channel on the server
 
 # Configuration
 Anzen is configured in two ways. First, the permissions. Anzen needs some basic permissions to function, directly related to ban events. Unfortunately, Discord does not separate the permissions for _reading_ historical bans from _handing out new bans_. This means that, for now, Anzen needs `ban members` permissions. The only safe way to use Anzen is to have ***all*** other members have at least one role, and to have Anzen be the lowest role in the hierarchy. Alternatively, you have to trust in (the security of) whoever hosts the instance of Anzen that you are inviting to your server. This is not uncommon, as many other general purpose bots such as [YAGPDB](https://yagpdb.xyz/), [Dyno](https://dyno.gg/), [Carl](https://carl.gg/), and so on, require similar or even further elevated permissions to function.
