@@ -36,7 +36,7 @@ Anzen is configured in two ways. First, the permissions. Anzen needs some basic 
 - `View Audit Log`
 - `Send Messages`
 - `Send Messages in Threads` (Optional, unused for now)
-## \configure
+## /configure
 Currently, the two main options that can be configured are:
 - Which channel to log to
 - Whether to ping a role when logging
