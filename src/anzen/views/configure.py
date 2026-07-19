@@ -1,44 +1,30 @@
 from __future__ import annotations
 
-import enum
 import logging
-import os
-import traceback
-from typing import Callable, List, Optional, Union
+from typing import Callable
 
-import attr
 import discord
 from discord import (
     ButtonStyle,
-    CategoryChannel,
     ChannelType,
     Guild,
     Interaction,
-    Member,
     PartialMessageable,
-    Role,
     SelectDefaultValue,
     SelectDefaultValueType,
     SelectOption,
     SeparatorSpacing,
-    TextStyle,
-    User,
     ui,
 )
-from discord.ext import commands
 from discord.ui import (
     ActionRow,
     Button,
     ChannelSelect,
     Container,
-    Label,
     LayoutView,
-    Modal,
     Select,
     Separator,
     TextDisplay,
-    TextInput,
-    View,
 )
 from pydantic import BaseModel, ConfigDict
 
@@ -361,24 +347,54 @@ class ChannelPageView(LayoutView):
         await interaction.delete_original_response()
 
 
+def _placeholder_page(title: str) -> Container:
+    """Simple stand-in page to display while I'm building content for this page."""
+    return Container(TextDisplay(f"# {title}\n-# Coming soon."))
+
+
 class SettingsView(LayoutView):
     row = ActionRow()
 
     def __init__(self, guild: Guild, settings: Settings, *args, **kwargs):
         super().__init__()
-        self.pages = ["a", ChannelPage(guild=guild, settings=settings), "c"]
-        self.current_page = 0
-        self.message = None
         self.logger = logging.getLogger(__name__)
+        self.message = None
 
-        self.page_content = Container(TextDisplay("Welcome!"))
+        # Every page must be a UI item
+        self.pages: list[Container] = [
+            _placeholder_page("Page 1"),
+            ChannelPage(guild=guild, settings=settings),
+            _placeholder_page("Page 3"),
+        ]
 
-    def _refresh_page(self, page):
-        self.remove_item(self.page_content)
-        self.add_item(self.page_content)
+        self.current_page = 0
+        self.page_content: Container | None = None
 
+        # Render the first page and put it in the view.
+        self._show_page(self.current_page)
+
+    def _show_page(self, index: int) -> None:
+        """Swap the currently displayed page container for a new one.
+
+        Has to call remove_item/add_item on the view to actually display.
+        """
+        if self.page_content is not None:
+            self.remove_item(self.page_content)
+
+        # `row` is declared at class level, so it's already present in
+        # self.children from construction onward. Pull it out and re-add
+        # it after the new page so it stays pinned at the bottom. We use the
+        # same trick in trick ChannelPageView.__init__.
         self.remove_item(self.row)
+
+        self.current_page = index
+        self.page_content = self.pages[index]
+
+        self.add_item(self.page_content)
         self.add_item(self.row)
+
+        self.row.children[0].disabled = self.current_page == 0
+        self.row.children[1].disabled = self.current_page == len(self.pages) - 1
 
     @row.button(
         label="◀️ Previous",
@@ -388,8 +404,8 @@ class SettingsView(LayoutView):
     )
     async def prev_button(self, interaction: Interaction, button: Button):
         try:
-            self.current_page = max(0, self.current_page - 1)
-            await self.update_buttons(interaction)
+            self._show_page(max(0, self.current_page - 1))
+            await interaction.response.edit_message(view=self)
         except discord.HTTPException as e:
             self.logger.error(f"Prev failed: {e}")
             await interaction.response.send_message(
@@ -399,20 +415,10 @@ class SettingsView(LayoutView):
     @row.button(label="Next ▶️", style=discord.ButtonStyle.secondary, custom_id="next")
     async def next_button(self, interaction: Interaction, button: Button):
         try:
-            self.current_page = min(len(self.pages) - 1, self.current_page + 1)
-            await self.update_buttons(interaction)
+            self._show_page(min(len(self.pages) - 1, self.current_page + 1))
+            await interaction.response.edit_message(view=self)
         except discord.HTTPException as e:
             self.logger.error(f"Next failed: {e}")
             await interaction.response.send_message(
                 "Navigation failed!", ephemeral=True
             )
-
-    async def update_buttons(self, interaction: Interaction):
-        try:
-            self.row.children[0].disabled = self.current_page == 0
-            self.row.children[1].disabled = self.current_page == len(self.pages) - 1
-            print(self.pages[self.current_page])
-            self.page_content = self.pages[self.current_page]
-            await interaction.response.edit_message(view=self)
-        except discord.HTTPException as e:
-            self.logger.error(f"Pagination update failed: {e}")

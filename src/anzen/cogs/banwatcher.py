@@ -1,5 +1,4 @@
 import asyncio
-import os
 from enum import Enum
 
 import discord
@@ -11,8 +10,7 @@ from pydantic import BaseModel
 
 from anzen.data.database import DB_HOST, DatabaseSessionManager
 from anzen.data.datamodel import Config
-from anzen.views.configure import ChannelPageView as SettingsView
-from anzen.views.configure import Settings
+from anzen.views.configure import Settings, SettingsView
 
 # Wants bot permissions "ban members" "view audit log", "send messages", "send messages in threads"
 
