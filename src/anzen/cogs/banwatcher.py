@@ -39,6 +39,7 @@ class BanWatcher(Cog):
         self.bot = bot
         self.sessionmanager = DatabaseSessionManager()
         self.sessionmanager.init(DB_HOST)
+        self.server_config = {}
 
     async def cog_load(self):
         await self._update_logchannels()
@@ -52,6 +53,95 @@ class BanWatcher(Cog):
             return channel
         else:
             return None
+
+    @staticmethod
+    def _flag_present(reason: str | None, flag: str) -> bool:
+        """Check whether `flag` appears as a standalone token in `reason`.
+
+        Whole-token matching (split on whitespace) rather than a raw
+        substring check, so e.g. an override of "--no-log" won't
+        accidentally match inside a reason like "--no-logging-policy".
+        """
+        if not reason or not flag:
+            return False
+        return flag in reason.split()
+
+    @classmethod
+    def _resolve_reason_visibility(cls, config: Config, reason: str | None) -> bool:
+        """Whether the ban reason text should be shared, per the banning
+        guild's privacy configuration.
+
+        log_all_reasons is a baseline; a matched override flag flips it:
+            True  + not matched -> True   (log by default)
+            True  + matched     -> False  (explicitly suppressed this one)
+            False + not matched -> False  (don't log by default)
+            False + matched     -> True   (explicitly opted this one in)
+        """
+        if reason is None:
+            return False
+        override_matched = cls._flag_present(reason, config.log_reasons_override)
+        return config.log_all_reasons != override_matched
+
+    @classmethod
+    def _resolve_ban_visibility(
+        cls, config: Config, reason: str | None
+    ) -> tuple[bool, bool]:
+        """Whether a ban should be shared with other guilds at all, and
+        whether its reason specifically should be included.
+
+        Returns (should_log_ban, should_log_reason).
+
+        should_log_ban follows the same flip pattern as should_log_reason,
+        with one addition: if log_all_bans is False, explicitly resolving
+        to show the reason (should_log_reason) also pulls the ban itself
+        into visibility — asking for the reason to be shown implies
+        wanting the ban surfaced too, even though bans aren't logged by
+        default for this guild.
+        """
+        should_log_reason = cls._resolve_reason_visibility(config, reason)
+        bans_override_matched = cls._flag_present(reason, config.log_bans_override)
+
+        if config.log_all_bans:
+            should_log_ban = not bans_override_matched
+        else:
+            should_log_ban = bans_override_matched or should_log_reason
+
+        return should_log_ban, should_log_reason
+
+    @classmethod
+    def _resolve_shareable_ban_item(
+        cls, config: Config | None, ban_item: BanItem
+    ) -> BanItem | None:
+        """Given the banning guild's Config and a raw BanItem, return the
+        version of it safe to share with other guilds, or None if the
+        banning guild's privacy settings say it shouldn't be shared at all.
+
+        If the banning guild has no Anzen configuration (never ran
+        /configure), we fail closed: no config means no explicit consent
+        to share its ban data, so we don't share anything.
+        """
+        if config is None:
+            return None
+
+        should_log_ban, should_log_reason = cls._resolve_ban_visibility(
+            config, ban_item.reason
+        )
+        if not should_log_ban:
+            return None
+        if should_log_reason:
+            return ban_item
+        return ban_item.model_copy(update={"reason": None})
+
+    @staticmethod
+    def _build_ping_mentions(config: Config) -> str:
+        """Ping prefix for a log message: mentions the RECEIVING guild's
+        configured mod roles and mod users. Empty string if none configured.
+        """
+        mentions = [f"<@&{role_id}>" for role_id in config.modrole_ids]
+        mentions += [f"<@{user_id}>" for user_id in config.moduser_ids]
+        if not mentions:
+            return ""
+        return "\n" + " ".join(mentions)
 
     async def _member_banned_in_guild_discord_api(
         self, member: Member, guild: Guild
@@ -120,9 +210,16 @@ class BanWatcher(Cog):
                 continue
 
             ban_item = await self._member_banned_in_guild(member, other_guild)
-            if ban_item is not None:
-                ban_items.append(ban_item)
-                # New member is banned in other guild, log!
+            if ban_item is None:
+                continue
+
+            # Privacy check belongs to the guild the ban happened in
+            banning_guild_config = self.server_config.get(other_guild.id)
+            shareable_item = self._resolve_shareable_ban_item(
+                banning_guild_config, ban_item
+            )
+            if shareable_item is not None:
+                ban_items.append(shareable_item)
 
         if not ban_items:
             return
@@ -130,9 +227,16 @@ class BanWatcher(Cog):
         channel = self._get_logchannel_for_guild(member.guild)
         if channel is None:
             return
-        role_id = self.server_config.get(member.guild.id).modrole_id
-        ping = f"\n<@&{role_id}> " if role_id else ""
-        message = f"# New Member{ping}\nYour new member <@{member.id}> has previously been banned in {len(ban_items)} other guild(s):\n- {'\n- '.join([self._format_joinmessage(bi) for bi in ban_items])}"
+
+        # Ping preferences belong to the RECEIVING guild
+        receiving_config = self.server_config[member.guild.id]
+        ping = self._build_ping_mentions(receiving_config)
+
+        message = (
+            f"# New Member{ping}\nYour new member <@{member.id}> has previously been "
+            f"banned in {len(ban_items)} other guild(s):\n- "
+            + "\n- ".join(self._format_joinmessage(bi) for bi in ban_items)
+        )
         await channel.send(message)
 
     async def log_new_member(self, member: Member, ban_list: list[BanItem]):
@@ -156,11 +260,15 @@ class BanWatcher(Cog):
         # TODO: Store references to logs such that logs can be removed when necessary
         # TODO: Be able to invoke on_member_ban through API. Optionally connect this bot's on_member_ban to said API
         print(f"{member} got banned in {guild}.")
-        bi = BanItem(
-            server_id=guild.id,
-            user_id=member.id,
-            reason=await self.get_ban_reason(guild, member),
-        )
+        reason = await self.get_ban_reason(guild, member)
+        bi = BanItem(server_id=guild.id, user_id=member.id, reason=reason)
+
+        # Resolve privacy ONCE.
+        banning_guild_config = self.server_config.get(guild.id)
+        shareable_item = self._resolve_shareable_ban_item(banning_guild_config, bi)
+        if shareable_item is None:
+            return  # Banning guild's privacy settings say: don't share this ban anywhere.
+
         for other_guild in self.bot.guilds:
             if other_guild == guild:
                 continue
@@ -172,15 +280,25 @@ class BanWatcher(Cog):
             channel = self._get_logchannel_for_guild(other_guild)
             if channel is None:
                 continue
-            role_id = self.server_config.get(other_guild.id).modrole_id
-            ping = f"\n<@&{role_id}> " if role_id else ""
-            if bi.reason is not None:
-                message = f"# Banned Member{ping}\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)} with reason: {bi.reason}."
+
+            # Ping preferences belong to the RECEIVING guild.
+            receiving_config = self.server_config[other_guild.id]
+            ping = self._build_ping_mentions(receiving_config)
+
+            if shareable_item.reason is not None:
+                message = (
+                    f"# Banned Member{ping}\nYour member <@{shareable_item.user_id}> just "
+                    f"got banned in {self.bot.get_guild(shareable_item.server_id)} with "
+                    f"reason: {shareable_item.reason}."
+                )
                 print(f"Trying to log to {channel}")
                 print(message)
                 await channel.send(message)
                 continue
-            message = f"# Banned Member{ping}\nYour member <@{bi.user_id}> just got banned in {self.bot.get_guild(bi.server_id)}."
+            message = (
+                f"# Banned Member{ping}\nYour member <@{shareable_item.user_id}> just "
+                f"got banned in {self.bot.get_guild(shareable_item.server_id)}."
+            )
             await channel.send(message)
 
     @command()
@@ -188,7 +306,6 @@ class BanWatcher(Cog):
         """Configure Anzen."""
         settings = Settings()
         view = SettingsView(self.sessionmanager, Config, interaction.guild, settings)
-        # await interaction.channel.send("No.")
         await interaction.response.send_message(view=view, ephemeral=False)
         await view.wait()
 

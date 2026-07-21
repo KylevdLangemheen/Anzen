@@ -1,4 +1,5 @@
-from sqlalchemy import BigInteger, Column, select
+from sqlalchemy import BigInteger, Boolean, Column, String, select
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,41 +11,25 @@ class Config(Base):
     SQLAlchemy async ORM model for per-server configuration.
 
     Columns:
-        server_id (BigInteger):     Primary key — Discord server (guild) snowflake ID.
-        logchannel_id (BigInteger): ID of the channel used for log messages.
-        modrole_id (BigInteger):    Optional ID of the moderator role.
-
-    Examples:
-        Create a config for a server::
-
-            config = await Config.create(
-                db,
-                server_id=123456789,
-                logchannel_id=987654321,
-                modrole_id=111222333
-            )
-
-        Fetch a server's config (returns None if not found)::
-
-            config = await Config.get(db, server_id=123456789)
-            if config:
-                print(config.logchannel_id)
-
-        Update just the log channel::
-
-            await Config.update(db, server_id=123456789, logchannel_id=999888777)
-
-        Get all server configs::
-
-            all_configs = await Config.get_all(db)
-            for cfg in all_configs:
-                print(cfg.server_id, cfg.logchannel_id)
+        server_id (BigInteger):          Primary key — Discord server (guild) snowflake ID.
+        logchannel_id (BigInteger):       ID of the channel used for log messages.
+        modrole_ids (list[int]):          IDs of roles to ping on notifications. Empty list if none.
+        moduser_ids (list[int]):          IDs of individual users to ping on notifications. Empty list if none.
+        log_all_bans (bool):              Whether every ban should be logged, regardless of issuer.
+        log_all_reasons (bool):           Whether the ban reason text should be logged.
+        log_bans_override (str):          CLI flag override controlling ban logging behaviour.
+        log_reasons_override (str):       CLI flag override controlling reason logging behaviour.
     """
 
     __tablename__ = "config"
     server_id = Column(BigInteger, primary_key=True)
     logchannel_id = Column(BigInteger, nullable=False)
-    modrole_id = Column(BigInteger, nullable=True)
+    modrole_ids = Column(ARRAY(BigInteger), nullable=False, server_default="{}")
+    moduser_ids = Column(ARRAY(BigInteger), nullable=False, server_default="{}")
+    log_all_bans = Column(Boolean, nullable=False, server_default="true")
+    log_all_reasons = Column(Boolean, nullable=False, server_default="true")
+    log_bans_override = Column(String, nullable=False, server_default="--no-log")
+    log_reasons_override = Column(String, nullable=False, server_default="--no-reason")
 
     @classmethod
     async def create(cls, db: AsyncSession, server_id: int, **kwargs):
