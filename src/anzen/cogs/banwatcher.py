@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from enum import Enum
 
 import discord
@@ -19,6 +20,7 @@ class BanItem(BaseModel):
     server_id: int
     user_id: int
     reason: str | None
+    ban_datetime: datetime | None = None
 
 
 # TODO: Add your preferred ban fetch methods here if you do not want to rely on the discord api
@@ -143,6 +145,25 @@ class BanWatcher(Cog):
             return ""
         return "\n" + " ".join(mentions)
 
+    async def _find_ban_audit_entry(
+        self, guild: Guild, member: User | Member
+    ) -> discord.AuditLogEntry | None:
+        """Look up the audit log entry for `member`'s ban in `guild`, if one
+        is still present in the audit log. Used to recover the original
+        ban timestamp (AuditLogEntry.created_at) for bans that already
+        existed before this bot noticed them (e.g. discovered on join,
+        rather than caught live via on_member_ban).
+        """
+        try:
+            async for entry in guild.audit_logs(
+                action=discord.AuditLogAction.ban, limit=50
+            ):
+                if entry.target and entry.target.id == member.id:
+                    return entry
+        except discord.Forbidden:
+            pass
+        return None
+
     async def _member_banned_in_guild_discord_api(
         self, member: Member, guild: Guild
     ) -> BanItem | None:
@@ -152,8 +173,14 @@ class BanWatcher(Cog):
             )  # Member is a Member, not a snowflake nor a user, will this work?
             if ban_entry is None:
                 return None
+            # fetch_ban doesn't include a timestamp, so pull it from the
+            # audit log if it's still available there.
+            audit_entry = await self._find_ban_audit_entry(guild, member)
             ban_item = BanItem(
-                server_id=guild.id, user_id=ban_entry.user.id, reason=ban_entry.reason
+                server_id=guild.id,
+                user_id=ban_entry.user.id,
+                reason=ban_entry.reason,
+                ban_datetime=audit_entry.created_at if audit_entry else None,
             )
             # TODO: Ban reason parsing
             return ban_item
@@ -193,11 +220,15 @@ class BanWatcher(Cog):
         return ban_item
 
     def _format_joinmessage(self, bi: BanItem):
+        guild_name = str(self.bot.get_guild(bi.server_id))
+        when = (
+            f" ({discord.utils.format_dt(bi.ban_datetime, style='f')})"
+            if bi.ban_datetime is not None
+            else ""
+        )
         if bi.reason is not None:
-            return (
-                f"{str(self.bot.get_guild(bi.server_id))}\n  - With reason: {bi.reason}"
-            )
-        return f"{str(self.bot.get_guild(bi.server_id))}"
+            return f"{guild_name}{when}\n  - With reason: {bi.reason}"
+        return f"{guild_name}{when}"
 
     @Cog.listener()
     async def on_member_join(self, member: Member):
@@ -244,15 +275,16 @@ class BanWatcher(Cog):
 
     async def get_ban_reason(
         self, guild: Guild, member: User | Member, retries: int = 3
-    ) -> str | None:
+    ) -> tuple[str | None, datetime | None]:
         # TODO: If a lot of members are banned within a couple of seconds, this method will miss them.
         # There doesn't seem to be a better way of doing this for now though.
         await asyncio.sleep(1)
         for _ in range(retries):
             async for entry in guild.audit_logs(limit=10):
                 if entry.target.id == member.id:
-                    return entry.reason
+                    return entry.reason, entry.created_at
             await asyncio.sleep(2)
+        return None, None
 
     @Cog.listener()
     async def on_member_ban(self, guild: Guild, member: User | Member):
@@ -260,8 +292,13 @@ class BanWatcher(Cog):
         # TODO: Store references to logs such that logs can be removed when necessary
         # TODO: Be able to invoke on_member_ban through API. Optionally connect this bot's on_member_ban to said API
         print(f"{member} got banned in {guild}.")
-        reason = await self.get_ban_reason(guild, member)
-        bi = BanItem(server_id=guild.id, user_id=member.id, reason=reason)
+        reason, ban_datetime = await self.get_ban_reason(guild, member)
+        bi = BanItem(
+            server_id=guild.id,
+            user_id=member.id,
+            reason=reason,
+            ban_datetime=ban_datetime,
+        )
 
         # Resolve privacy ONCE.
         banning_guild_config = self.server_config.get(guild.id)
@@ -285,10 +322,16 @@ class BanWatcher(Cog):
             receiving_config = self.server_config[other_guild.id]
             ping = self._build_ping_mentions(receiving_config)
 
+            when = (
+                f" {discord.utils.format_dt(shareable_item.ban_datetime, style='f')}"
+                if shareable_item.ban_datetime is not None
+                else ""
+            )
+
             if shareable_item.reason is not None:
                 message = (
                     f"# Banned Member{ping}\nYour member <@{shareable_item.user_id}> just "
-                    f"got banned in {self.bot.get_guild(shareable_item.server_id)} with "
+                    f"got banned in {self.bot.get_guild(shareable_item.server_id)}{when} with "
                     f"reason: {shareable_item.reason}."
                 )
                 print(f"Trying to log to {channel}")
@@ -297,7 +340,7 @@ class BanWatcher(Cog):
                 continue
             message = (
                 f"# Banned Member{ping}\nYour member <@{shareable_item.user_id}> just "
-                f"got banned in {self.bot.get_guild(shareable_item.server_id)}."
+                f"got banned in {self.bot.get_guild(shareable_item.server_id)}{when}."
             )
             await channel.send(message)
 
