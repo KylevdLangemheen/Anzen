@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable
 from typing import Callable
 
 import discord
@@ -60,10 +61,10 @@ class Settings(BaseModel):
         Fields are passed through the initializer, which does not go through
         `__setattr__`, so none of the change callbacks fire (which would
         overwrite the saved override flags)! The category is not persisted,
-        so it always starts unset.
+        so it starts unset; call `resolve_against_guild` afterwards to derive it
+        from the saved channel.
         """
-        # TODO: handle category not persisted
-        # TODO: handle graceful fallback or warning message if roles or channels changed between now and previous configure run. I.e. when a role was removed.
+        # TODO: handle graceful fallback or warning message if roles changed between now and previous configure run. I.e. when a role was removed.
         if config is None:
             return cls()
         return cls(
@@ -75,6 +76,29 @@ class Settings(BaseModel):
             log_bans_override=config.log_bans_override,
             log_reasons_override=config.log_reasons_override,
         )
+
+    def resolve_against_guild(self, guild: Guild, client: discord.Client) -> list[str]:
+        """Check the loaded channel against the live guild.
+
+        Derives `category` from the saved channel (the category is deliberately
+        not persisted, since it would go stale when the channel is moved) and
+        drops a channel that no longer exists, so Finish cannot silently
+        re-save a dead id. Returns notices to show the admin.
+        """
+        if self.channel is None:
+            return []
+        channel = guild.get_channel_or_thread(int(self.channel))
+        if channel is None:
+            self.channel = None
+            return [
+                "The previously saved log channel no longer exists, please pick a new one."
+            ]
+        parent = getattr(channel, "category", None)
+        if parent is not None:
+            self.category = client.get_partial_messageable(
+                parent.id, guild_id=guild.id, type=parent.type
+            )
+        return []
 
     def on_category_change(self, callback: Callable):
         """Register a callback to fire when category changes"""
@@ -281,15 +305,29 @@ class BanSettingsPage(Container):
 
 
 class ChannelSetting(ActionRow["SettingsView"]):
-    def __init__(self, guild: Guild, settings: Settings, id: int | None = None):
+    # Discord allows at most 25 options in a string select.
+    MAX_OPTIONS = 25
+    HINT = "## Channel Selection\n-# This is the channel where the logs will be sent."
+
+    def __init__(
+        self,
+        guild: Guild,
+        settings: Settings,
+        hint: TextDisplay | None = None,
+        id: int | None = None,
+    ):
         super().__init__(id=id)
         self.settings = settings
         self.guild = guild
+        self.hint = hint
         self.logger = logging.getLogger(__name__)
+        self._candidate_count = 0
 
-        options = self._get_options()
+        category = settings.category
+        options = self._get_options(category.id if category is not None else None)
         self.channel_option = ChannelOption(
             settings=settings,
+            on_change=self._refresh_hint,
             placeholder="Select a channel",
             options=options,
             max_values=1,
@@ -298,6 +336,7 @@ class ChannelSetting(ActionRow["SettingsView"]):
 
         self.add_item(self.channel_option)
         self.settings.on_category_change(self.update_options)
+        self._refresh_hint()
 
     def _get_options(self, target_category_id: int | None = None):
         options = []
@@ -320,26 +359,54 @@ class ChannelSetting(ActionRow["SettingsView"]):
         for option in options:
             option.default = option.value == self.settings.channel
 
-        return options[:25]
+        self._candidate_count = len(options)
+        if len(options) > self.MAX_OPTIONS:
+            shown = options[: self.MAX_OPTIONS]
+            # Never let the cut-off drop the channel that is currently selected.
+            selected = next((o for o in options if o.default), None)
+            if selected is not None and selected not in shown:
+                shown = [selected] + options[: self.MAX_OPTIONS - 1]
+            options = shown
+        return options
+
+    def _refresh_hint(self) -> None:
+        """Keep the text above the select in sync with the selection and list."""
+        if self.hint is None:
+            return
+        text = self.HINT
+        if self._candidate_count > self.MAX_OPTIONS:
+            text += (
+                f"\n-# Showing {self.MAX_OPTIONS} of {self._candidate_count} "
+                "channels, pick a category to narrow the list."
+            )
+        if self.settings.channel:
+            text += f"\n-# Currently selected: <#{self.settings.channel}>"
+        self.hint.content = text
 
     def update_options(self, old_category, new_category) -> None:
         target_category_id = new_category.id if new_category is not None else None
         options = self._get_options(target_category_id)
         self.channel_option.options = options
+        self._refresh_hint()
         return True
 
 
 class ChannelOption(Select):
-    def __init__(self, settings: Settings, **kwargs):
+    def __init__(
+        self, settings: Settings, on_change: Callable[[], None] | None = None, **kwargs
+    ):
         super().__init__(**kwargs)
         self.settings = settings
+        self.on_change = on_change
 
     async def callback(self, interaction: Interaction):
         if self.values and self.values[0] and self.values[0] != "0":
             self.settings.channel = self.values[0]
             for option in self.options:
                 option.default = option.value == self.values[0]
-        await interaction.response.defer()
+            if self.on_change is not None:
+                self.on_change()
+        await interaction.response.edit_message(view=self.view)
 
 
 class CategorySetting(ActionRow["SettingsView"]):
@@ -683,12 +750,9 @@ class ChannelPage(Container):
             )
         )
         self.add_item(CategorySetting(self.settings, id=100))
-        self.add_item(
-            TextDisplay(
-                "## Channel Selection\n-# This is the channel where the logs will be sent."
-            )
-        )
-        self.add_item(ChannelSetting(self.guild, self.settings, id=101))
+        hint = TextDisplay(ChannelSetting.HINT)
+        self.add_item(hint)
+        self.add_item(ChannelSetting(self.guild, self.settings, hint=hint, id=101))
         self.add_item(
             TextDisplay(
                 "## Coming Soon\n-# Further options such as default behaviour are coming soon."
@@ -793,11 +857,23 @@ class SettingsView(LayoutView):
         guild: Guild,
         settings: Settings,
         *args,
+        opener_id: int,
+        on_saved: Callable[[], Awaitable[None]] | None = None,
         **kwargs,
     ):
         super().__init__()
         self.logger = logging.getLogger(__name__)
         self.message = None
+
+        # Set by the command after sending, so on_timeout can edit the panel.
+        self.origin_interaction: Interaction | None = None
+
+        # Only the admin who opened the panel may use it (see interaction_check).
+        self.opener_id = opener_id
+
+        # Awaited after a successful save, e.g. to refresh the cog's cache now.
+        self.on_saved = on_saved
+
         self.sessionmanager = sessionmanager
         self.config = config
         self.guild = guild
@@ -815,6 +891,37 @@ class SettingsView(LayoutView):
 
         # Render the first page and put it in the view.
         self._show_page(self.current_page)
+
+    async def interaction_check(self, interaction: Interaction) -> bool:
+        """Only the opener, and only while they still hold Manage Server.
+
+        Checked on every click, since roles can change while the panel is open.
+        """
+        perms = interaction.permissions
+        if interaction.user.id == self.opener_id and (
+            perms.manage_guild or perms.administrator
+        ):
+            return True
+        await interaction.response.send_message(
+            "Only the admin who ran /configure (with Manage Server) can use this panel.",
+            ephemeral=True,
+        )
+        return False
+
+    async def on_timeout(self) -> None:
+        """Grey out the panel instead of letting it silently stop responding."""
+        for item in self.walk_children():
+            if hasattr(item, "disabled"):
+                item.disabled = True
+        if self.origin_interaction is None:
+            return
+        try:
+            await self.origin_interaction.edit_original_response(view=self)
+            await self.origin_interaction.followup.send(
+                "This panel expired, run /configure again.", ephemeral=True
+            )
+        except discord.HTTPException as e:
+            self.logger.warning("Could not mark the expired panel: %s", e)
 
     def _show_page(self, index: int) -> None:
         """Swap the currently displayed page container for a new one.
@@ -836,8 +943,11 @@ class SettingsView(LayoutView):
         self.add_item(self.page_content)
         self.add_item(self.row)
 
-        self.row.children[0].disabled = self.current_page == 0
-        self.row.children[1].disabled = self.current_page == len(self.pages) - 1
+        # Address the buttons by name: the row is Previous, Finish, Next, so
+        # indexing it by position used to disable Finish on the last page.
+        # Finish stays enabled everywhere (it validates the channel itself).
+        self.prev_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page == len(self.pages) - 1
 
     @row.button(
         label="◀️ Previous",
@@ -865,19 +975,30 @@ class SettingsView(LayoutView):
             return
         # Edit the message to make it the interaction response...
         await interaction.response.edit_message(view=self)
-        # Save the settings:
-        async with self.sessionmanager.session() as db:
-            await self.config.upsert(
-                db,
-                self.guild.id,
-                logchannel_id=int(self.settings.channel),
-                modrole_ids=[int(rid) for rid in self.settings.modroles],
-                moduser_ids=[int(uid) for uid in self.settings.modusers],
-                log_all_bans=self.settings.log_all_bans,
-                log_all_reasons=self.settings.log_all_reasons,
-                log_bans_override=self.settings.log_bans_override,
-                log_reasons_override=self.settings.log_reasons_override,
+        # Save the settings and apply them right away. On failure keep the
+        # panel open so the admin does not lose their selections.
+        try:
+            async with self.sessionmanager.session() as db:
+                await self.config.upsert(
+                    db,
+                    self.guild.id,
+                    logchannel_id=int(self.settings.channel),
+                    modrole_ids=[int(rid) for rid in self.settings.modroles],
+                    moduser_ids=[int(uid) for uid in self.settings.modusers],
+                    log_all_bans=self.settings.log_all_bans,
+                    log_all_reasons=self.settings.log_all_reasons,
+                    log_bans_override=self.settings.log_bans_override,
+                    log_reasons_override=self.settings.log_reasons_override,
+                )
+            if self.on_saved is not None:
+                await self.on_saved()
+        except Exception:
+            self.logger.exception("Saving settings failed for guild %s", self.guild.id)
+            await interaction.followup.send(
+                "Saving failed, please try Finish again. Your selections are kept.",
+                ephemeral=True,
             )
+            return
         # ...and then send a confirmation message.
         await interaction.followup.send("Settings saved.", ephemeral=True)
         # Then delete the settings panel

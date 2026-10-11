@@ -1,9 +1,10 @@
 import asyncio
+import logging
 from datetime import datetime
 from enum import Enum
 
 import discord
-from discord import Guild, Member, Thread, User  # noqa
+from discord import Guild, Member, Thread, User, app_commands  # noqa
 from discord.abc import GuildChannel, PrivateChannel
 from discord.app_commands import command
 from discord.ext.commands import Bot, Cog
@@ -12,6 +13,8 @@ from pydantic import BaseModel
 from anzen.data.database import DB_HOST, DatabaseSessionManager
 from anzen.data.datamodel import Config
 from anzen.views.configure import Settings, SettingsView
+
+logger = logging.getLogger(__name__)
 
 # Wants bot permissions "ban members" "view audit log", "send messages", "send messages in threads"
 
@@ -224,6 +227,29 @@ class BanWatcher(Cog):
             )
         return ban_item
 
+    async def _send_notification(
+        self,
+        channel: GuildChannel | Thread | PrivateChannel,
+        message: str,
+        guild: Guild,
+    ) -> bool:
+        """Send `message` to `channel` without ever raising.
+
+        A missing permission, a deleted channel or an over-long message in one
+        guild must not stop the notifications to all the remaining guilds.
+        """
+        try:
+            await channel.send(message)
+        except discord.HTTPException as e:  # includes Forbidden and NotFound
+            logger.warning(
+                "Could not send a notification to guild %s (channel %s): %s",
+                guild.id,
+                getattr(channel, "id", None),
+                e,
+            )
+            return False
+        return True
+
     def _format_joinmessage(self, bi: BanItem):
         guild_name = str(self.bot.get_guild(bi.server_id))
         when = (
@@ -273,7 +299,7 @@ class BanWatcher(Cog):
             f"banned in {len(ban_items)} other guild(s):\n- "
             + "\n- ".join(self._format_joinmessage(bi) for bi in ban_items)
         )
-        await channel.send(message)
+        await self._send_notification(channel, message, member.guild)
 
     async def log_new_member(self, member: Member, ban_list: list[BanItem]):
         pass
@@ -285,9 +311,21 @@ class BanWatcher(Cog):
         # There doesn't seem to be a better way of doing this for now though.
         await asyncio.sleep(1)
         for _ in range(retries):
-            async for entry in guild.audit_logs(limit=10):
-                if entry.target.id == member.id:
-                    return entry.reason, entry.created_at
+            try:
+                async for entry in guild.audit_logs(
+                    limit=10, action=discord.AuditLogAction.ban
+                ):
+                    if entry.target is not None and entry.target.id == member.id:
+                        return entry.reason, entry.created_at
+            except discord.Forbidden:
+                # Retrying cannot help without the View Audit Log permission.
+                logger.warning(
+                    "Missing 'View Audit Log' in guild %s, cannot read ban reasons.",
+                    guild.id,
+                )
+                return None, None
+            except discord.HTTPException as e:
+                logger.warning("Audit log request failed in guild %s: %s", guild.id, e)
             await asyncio.sleep(2)
         return None, None
 
@@ -341,27 +379,62 @@ class BanWatcher(Cog):
                 )
                 print(f"Trying to log to {channel}")
                 print(message)
-                await channel.send(message)
+                await self._send_notification(channel, message, other_guild)
                 continue
             message = (
                 f"# Banned Member{ping}\nYour member <@{shareable_item.user_id}> just "
                 f"got banned in {self.bot.get_guild(shareable_item.server_id)}{when}."
             )
-            await channel.send(message)
+            await self._send_notification(channel, message, other_guild)
 
     @command()
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def configure(self, interaction: discord.Interaction):
         """Configure Anzen."""
         # Start from what this guild already saved, so re-running /configure
         # shows (and re-saves) the current values instead of the defaults.
-        settings = Settings.from_config(self.server_config.get(interaction.guild.id))
-        view = SettingsView(self.sessionmanager, Config, interaction.guild, settings)
-        await interaction.response.send_message(view=view, ephemeral=False)
+        async with self.sessionmanager.session() as db:
+            saved = await Config.get(db, interaction.guild.id)
+            settings = Settings.from_config(saved)
+        notices = settings.resolve_against_guild(interaction.guild, interaction.client)
+        view = SettingsView(
+            self.sessionmanager,
+            Config,
+            interaction.guild,
+            settings,
+            opener_id=interaction.user.id,
+            on_saved=self._update_logchannels,
+        )
+        # Ephemeral: the panel shows server details and only the opener may use it.
+        await interaction.response.send_message(view=view, ephemeral=True)
+        view.origin_interaction = interaction
+        for notice in notices:
+            await interaction.followup.send(notice, ephemeral=True)
         await view.wait()
 
-        await self._update_logchannels()
-
         print(f"Settings updated: {settings}")
+
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            message = "You need the **Manage Server** permission to use this command."
+        elif isinstance(error, app_commands.NoPrivateMessage):
+            message = "This command only works inside a server."
+        else:
+            # Having this handler means the tree's default logging is skipped.
+            logger.error(
+                "Unhandled error in /%s",
+                interaction.command.name if interaction.command else "?",
+                exc_info=error,
+            )
+            message = "Something went wrong running that command."
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
 
 
 async def setup(bot):
