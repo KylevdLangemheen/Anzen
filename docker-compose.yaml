@@ -8,11 +8,14 @@ services:
       - POSTGRESQL_HOST=${POSTGRESQL_HOST}
       - POSTGRESQL_USER=${POSTGRESQL_USER}
       - POSTGRESQL_PW=${POSTGRESQL_PW}
+    depends_on:
+      anzen-db:
+        condition: service_healthy
     networks:
       - anzen-network
   anzen-db:
     image: postgres:18
-    container_name: ${POSTGRESQL_HOST}
+    container_name: anzen-db
     restart: unless-stopped
     environment:
       - POSTGRES_USER=${POSTGRESQL_USER}
@@ -20,6 +23,11 @@ services:
       - POSTGRES_DB=db_anzen
     volumes:
       - anzen-db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d db_anzen"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
     networks:
       - anzen-network
     ports:
