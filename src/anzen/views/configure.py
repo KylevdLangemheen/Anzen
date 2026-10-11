@@ -52,6 +52,30 @@ class Settings(BaseModel):
     _log_all_bans_callbacks: list[Callable] = PrivateAttr(default_factory=list)
     _log_all_reasons_callbacks: list[Callable] = PrivateAttr(default_factory=list)
 
+    @classmethod
+    def from_config(cls, config: Config | None) -> Settings:
+        """Build the intermediate settings from a guild's saved `Config`.
+
+        Falls back to the defaults for a guild without preexisting config.
+        Fields are passed through the initializer, which does not go through
+        `__setattr__`, so none of the change callbacks fire (which would
+        overwrite the saved override flags)! The category is not persisted,
+        so it always starts unset.
+        """
+        # TODO: handle category not persisted
+        # TODO: handle graceful fallback or warning message if roles or channels changed between now and previous configure run. I.e. when a role was removed.
+        if config is None:
+            return cls()
+        return cls(
+            channel=str(config.logchannel_id),
+            modroles=[str(rid) for rid in config.modrole_ids],
+            modusers=[str(uid) for uid in config.moduser_ids],
+            log_all_bans=config.log_all_bans,
+            log_all_reasons=config.log_all_reasons,
+            log_bans_override=config.log_bans_override,
+            log_reasons_override=config.log_reasons_override,
+        )
+
     def on_category_change(self, callback: Callable):
         """Register a callback to fire when category changes"""
         self._category_callbacks.append(callback)
@@ -244,11 +268,12 @@ class BanSettingsPage(Container):
 
         self.add_item(
             TextDisplay(
-                "## Log All Ban Reasons\n-# Whether the reason text attached to a ban should "
-                "be propagated per default. Click the override to change override flag. This override "
-                "flag has unique behaviour: If NOT logging all bans, and you include the ban reason "
-                "override in the ban reason text, Anzen will log the ban anyways and include the "
-                "ban reason as per the override."
+                "## Log All Ban Reasons\n-# Whether the reason text attached to a logged ban should "
+                "be propagated per default. Click the override to change override flag. Putting the "
+                "override flag into the ban reason flips the default for that specific ban. This override "
+                "flag has unique behaviour: If NOT logging all bans AND NOT logging all reasons, "
+                "including the reason override in the ban reason will log the ban anyways, with its "
+                "reason. If bans are off but reasons are on, only the ban override can opt a ban in."
             )
         )
         self.add_item(LogAllReasonsToggle(settings, id=202))
@@ -848,6 +873,10 @@ class SettingsView(LayoutView):
                 logchannel_id=int(self.settings.channel),
                 modrole_ids=[int(rid) for rid in self.settings.modroles],
                 moduser_ids=[int(uid) for uid in self.settings.modusers],
+                log_all_bans=self.settings.log_all_bans,
+                log_all_reasons=self.settings.log_all_reasons,
+                log_bans_override=self.settings.log_bans_override,
+                log_reasons_override=self.settings.log_reasons_override,
             )
         # ...and then send a confirmation message.
         await interaction.followup.send("Settings saved.", ephemeral=True)

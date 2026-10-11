@@ -93,12 +93,16 @@ class BanWatcher(Cog):
 
         Returns (should_log_ban, should_log_reason).
 
-        should_log_ban follows the same flip pattern as should_log_reason,
-        with one addition: if log_all_bans is False, explicitly resolving
-        to show the reason (should_log_reason) also pulls the ban itself
-        into visibility — asking for the reason to be shown implies
-        wanting the ban surfaced too, even though bans aren't logged by
-        default for this guild.
+        Bans have the same flip pattern as ban reason:
+            log_all_bans True  + flag not matched -> logged (opt-out)
+            log_all_bans True  + flag matched     -> not logged
+            log_all_bans False + flag not matched -> not logged (opt-in)
+            log_all_bans False + flag matched     -> logged
+
+        With one exception: only when BOTH log_all_bans and log_all_reasons are
+        False: the reason override flag also opts the ban in. The reason is
+        then opt-in too, so using its flag means "log this ban with its
+        reason".
         """
         should_log_reason = cls._resolve_reason_visibility(config, reason)
         bans_override_matched = cls._flag_present(reason, config.log_bans_override)
@@ -106,7 +110,8 @@ class BanWatcher(Cog):
         if config.log_all_bans:
             should_log_ban = not bans_override_matched
         else:
-            should_log_ban = bans_override_matched or should_log_reason
+            reason_opted_in = not config.log_all_reasons and should_log_reason
+            should_log_ban = bans_override_matched or reason_opted_in
 
         return should_log_ban, should_log_reason
 
@@ -347,7 +352,9 @@ class BanWatcher(Cog):
     @command()
     async def configure(self, interaction: discord.Interaction):
         """Configure Anzen."""
-        settings = Settings()
+        # Start from what this guild already saved, so re-running /configure
+        # shows (and re-saves) the current values instead of the defaults.
+        settings = Settings.from_config(self.server_config.get(interaction.guild.id))
         view = SettingsView(self.sessionmanager, Config, interaction.guild, settings)
         await interaction.response.send_message(view=view, ephemeral=False)
         await view.wait()
