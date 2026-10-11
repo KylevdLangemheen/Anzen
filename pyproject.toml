@@ -25,3 +25,6 @@ dev = [
     "isort>=7.0.0",
     "pyupgrade>=3.21.2",
 ]
+
+[tool.setuptools.dynamic]
+version = {attr = "anzen.__version__"}
