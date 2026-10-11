@@ -1,7 +1,7 @@
 import math
 
 import discord
-from discord import Interaction
+from discord import Interaction, app_commands
 from discord.ext.commands import Bot
 
 MY_GUILD = discord.Object(id=593006751394037790)
@@ -48,6 +48,7 @@ async def ping(interaction: Interaction):
 # Posted by thecalendar
 # Retrieved 2026-06-20, License - CC BY-SA 4.0
 @anzen_bot.tree.command()
+@app_commands.guild_only()
 async def sync(interaction: Interaction):
     print("sync command")
 
